@@ -1,0 +1,65 @@
+services:
+  init:
+    image: alpine:latest
+    volumes:
+      - ./volumes:/volumes
+    entrypoint: ["sh", "-c"]
+    command: >
+      "mkdir -p /volumes/config /volumes/db /volumes/db-import /volumes/logs/app /volumes/logs/db /volumes/private /volumes/public &&
+       chown -R 100:101 /volumes/config /volumes/logs/app /volumes/private /volumes/public &&
+       chown -R 999:999 /volumes/db /volumes/db-import /volumes/logs/db &&
+       wget https://github.com/pkp/ojs/raw/${OJS_VERSION}/config.TEMPLATE.inc.php -O /volumes/config/config.inc.php &&
+       echo 'Initialization complete.'"
+
+  db:
+    image: mariadb:11.4
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-ojsPwd}"
+      MYSQL_DATABASE: "${OJS_DB_NAME:-ojs}"
+      MYSQL_USER: "${OJS_DB_USER:-ojs}"
+      MYSQL_PASSWORD: "${OJS_DB_PASSWORD:-ojsPwd}"
+    volumes:
+      - ./volumes/db:/var/lib/mysql
+      - ./volumes/db-import:/docker-entrypoint-initdb.d
+    depends_on:
+      - init
+
+  ojs:
+    image: "pkpofficial/${OJS_IMAGE:-ojs}:${OJS_VERSION:-latest}"
+    hostname: "${COMPOSE_PROJECT_NAME:-demo}"
+    ports:
+      - "80"
+      - "443"
+    volumes:
+      - /etc/localtime:/etc/localtime
+      - ./volumes/private:/var/www/files
+      - ./volumes/public:/var/www/html/public
+      - ./volumes/config:/var/www/html/config
+    depends_on:
+      - db
+      - init
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ojs.entrypoints=websecure"
+      - "traefik.http.routers.ojs.rule=Host(`domain`)"
+      - "traefik.http.routers.ojs.tls=true"
+      - "traefik.http.routers.ojs.tls.certresolver=leresolver"
+      - "traefik.http.routers.ojs.middlewares=ojs-headers"
+      - "traefik.http.middlewares.ojs-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.ojs-headers.headers.customrequestheaders.X-Forwarded-Host=domain"
+      - "traefik.http.middlewares.ojs-headers.headers.customrequestheaders.X-Forwarded-Port=443"
+
+  post_init:
+    image: alpine:latest
+    volumes:
+      - ./volumes/public:/var/www/html/public
+      - ./volumes/config:/var/www/html/config
+    entrypoint: ["sh", "-c"]
+    command: >
+      "sleep 10 &&
+       echo 'SetEnvIf X-Forwarded-Proto \"https\" HTTPS=on' > /var/www/html/config/.htaccess &&
+       echo 'Post initialization complete.'"
+    depends_on:
+      - ojs
+
+# No networks defined; use default
